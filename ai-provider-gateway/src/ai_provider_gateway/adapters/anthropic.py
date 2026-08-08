@@ -16,7 +16,7 @@ _PRICE_PER_1K_OUTPUT_CENTS = 1.5
 class AnthropicAdapter:
     """Anthropic's Messages API separates the system prompt from the
     message list, unlike OpenAI's single-array format — this translation
-    happens HERE, inside the adapter, so nothing above the AIProviderPort
+    happens HERE, inside the adapter, so nothing above the ChatProvider
     needs to know Anthropic's wire format differs from OpenAI's.
     """
 
@@ -82,16 +82,6 @@ class AnthropicAdapter:
                 async for line in resp.aiter_lines():
                     if line.startswith("data: "):
                         yield line[len("data: "):]
-
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        # Anthropic does not offer a first-party embeddings endpoint at the
-        # time of writing; this adapter delegates embeddings to whichever
-        # provider is configured as the org's embedding provider (typically
-        # OpenAI or a local model via Ollama). Raising here makes that
-        # limitation explicit rather than silently wrong.
-        raise NotImplementedError(
-            "AnthropicAdapter does not support embeddings; configure a separate embedding provider"
-        )
 
     def estimate_cost(self, request: CompletionRequest) -> Money:
         approx_input_tokens = sum(len(m.content) for m in request.messages) // 4

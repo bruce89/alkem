@@ -14,7 +14,7 @@ class OllamaAdapter:
     """Local/self-hosted models via Ollama. Zero per-token cost — this is
     the adapter that proves the provider abstraction is real: a client with
     strict data-residency requirements can run 100% of their AI workload
-    on-prem behind this exact same AIProviderPort.
+    on-prem behind the same provider capability contracts.
     """
 
     def __init__(self, base_url: str):
