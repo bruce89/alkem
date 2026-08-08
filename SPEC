@@ -1,0 +1,945 @@
+# ALKEM — Living Product & Architecture Spec
+
+**Status:** Draft / Living document  
+**Current milestone:** Foundation  
+**Version:** 0.1
+
+---
+
+# 1. Vision
+
+ALKEM is a modular AI development platform designed to make language models usable as interchangeable infrastructure rather than hard-coded vendor dependencies.
+
+The system should allow applications to:
+
+- interact with local and remote AI models through stable abstractions;
+- select models/providers according to task requirements;
+- augment models with external knowledge;
+- maintain contextual and longitudinal memory;
+- expose reusable AI capabilities to different clients;
+- eventually support developer tooling such as a VS Code extension and code-generation workflows.
+
+ALKEM is both:
+
+1. a usable software product;
+2. a learning and portfolio project demonstrating AI engineering, architecture and product-design decisions.
+
+The objective is **not maximum feature count**. The objective is a small, coherent system whose architecture can be understood and defended end-to-end.
+
+---
+
+# 2. Product principles
+
+## 2.1 Provider independence
+
+Business and orchestration code must not depend directly on OpenAI, Anthropic, Ollama or another provider.
+
+Vendor-specific behavior belongs at the system boundary.
+
+## 2.2 Capability-driven design
+
+A provider is not assumed to support every AI capability.
+
+Examples:
+
+- chat/completion;
+- streaming;
+- embeddings;
+- structured output;
+- tool calling;
+- multimodal input.
+
+Capabilities should be explicit rather than represented through methods that throw `NotImplementedError`.
+
+## 2.3 Local-first compatibility
+
+ALKEM must support local inference as a first-class use case.
+
+Ollama is initially used as the local runtime adapter, but domain logic must not depend on Ollama.
+
+## 2.4 Small composable components
+
+Prefer narrow interfaces and composition over large framework abstractions.
+
+Avoid implementing infrastructure until a concrete use case requires it.
+
+## 2.5 Observable behavior
+
+AI calls should eventually expose enough metadata to understand:
+
+- provider;
+- model;
+- latency;
+- token usage;
+- estimated/actual cost;
+- failure;
+- retry/fallback decisions.
+
+## 2.6 Human-understandable architecture
+
+Generated code must remain understandable by a developer reviewing the repository.
+
+Do not increase abstraction merely to demonstrate patterns.
+
+---
+
+# 3. High-level architecture
+
+```text
+┌─────────────────────────────────────────┐
+│                Clients                  │
+│                                         │
+│ CLI / Desktop / API / VS Code Extension│
+└────────────────────┬────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────┐
+│             ALKEM Application           │
+│                                         │
+│ Use Cases / Sessions / Code Workflows   │
+└────────────────────┬────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────┐
+│            AI Orchestration Core        │
+│                                         │
+│ Model selection                         │
+│ Prompt/context assembly                 │
+│ Tool execution                          │
+│ Routing / fallback                      │
+│ Policies                                │
+└───────────┬──────────────────┬──────────┘
+            │                  │
+            ▼                  ▼
+┌───────────────────┐   ┌───────────────────┐
+│ Knowledge/Memory  │   │ Provider Gateway  │
+│                   │   │                   │
+│ RAG               │   │ Chat              │
+│ Embeddings        │   │ Embeddings        │
+│ Session memory    │   │ Streaming         │
+│ Long-term memory  │   │ Capabilities      │
+└───────────────────┘   └─────────┬─────────┘
+                                  │
+                      ┌───────────┼───────────┐
+                      ▼           ▼           ▼
+                   OpenAI     Anthropic    Ollama
+```
+
+---
+
+# 4. Component boundaries
+
+## 4.1 `ai-provider-gateway`
+
+### Responsibility
+
+Translate ALKEM's provider-independent AI contracts into vendor-specific protocols and normalize responses back into ALKEM contracts.
+
+### Contains
+
+- request/response entities;
+- provider interfaces;
+- provider capabilities;
+- adapters;
+- provider-specific translation;
+- normalized errors;
+- usage metadata.
+
+### Must NOT contain
+
+- RAG;
+- vector databases;
+- conversation memory;
+- agent loops;
+- prompt templates;
+- business workflows;
+- model-routing policies;
+- application-specific retry/fallback strategies.
+
+This package should be independently reusable.
+
+---
+
+# 5. Provider Gateway — target design
+
+The existing implementation is the starting point.
+
+Current concepts to retain:
+
+- Ports & Adapters / Hexagonal Architecture;
+- `CompletionRequest`;
+- `CompletionResult`;
+- `Message`;
+- provider-specific adapters;
+- async APIs;
+- vendor-neutral application code.
+
+## 5.1 Split provider capabilities
+
+Do not require one provider interface to implement every AI capability.
+
+Target conceptual contracts:
+
+```text
+ChatProvider
+    complete(request)
+    stream(request)
+
+EmbeddingProvider
+    embed(request)
+
+CostEstimator
+    estimate_cost(request)
+```
+
+An adapter may implement one or several capabilities.
+
+Example:
+
+```text
+OpenAIAdapter
+    ChatProvider
+    EmbeddingProvider
+    CostEstimator
+
+AnthropicAdapter
+    ChatProvider
+    CostEstimator
+
+OllamaAdapter
+    ChatProvider
+    EmbeddingProvider
+```
+
+Exact Python protocol organization will be decided during implementation.
+
+## 5.2 Normalize streaming
+
+Consumers must never parse provider-specific SSE or JSON.
+
+Target contract:
+
+```text
+AsyncIterator[StreamEvent]
+```
+
+Initial event model may contain:
+
+```text
+TextDelta
+UsageUpdate
+Completed
+```
+
+MVP may start with only normalized text deltas if introducing event types adds unnecessary complexity.
+
+## 5.3 Embedding request/result
+
+Do not hardcode embedding models inside adapters.
+
+Introduce explicit request data:
+
+```text
+EmbeddingRequest
+    model
+    inputs
+```
+
+and a provider-independent result:
+
+```text
+EmbeddingResult
+    embeddings
+    model
+    provider
+    usage?
+```
+
+## 5.4 Errors
+
+Provider-specific HTTP errors must eventually become normalized domain errors.
+
+Initial categories:
+
+```text
+AuthenticationError
+RateLimitError
+ModelUnavailableError
+InvalidRequestError
+ProviderConnectionError
+ProviderResponseError
+```
+
+Do not implement a complex hierarchy until real adapter behavior requires it.
+
+## 5.5 HTTP lifecycle
+
+Avoid coupling application semantics to `httpx`.
+
+Adapters may internally share/inject an async HTTP client to improve:
+
+- testability;
+- connection pooling;
+- resource lifecycle management.
+
+This is an implementation concern, not part of the public domain contract.
+
+---
+
+# 6. AI Orchestration Core
+
+This is where ALKEM begins to add product value beyond a provider abstraction.
+
+Future package concept:
+
+```text
+alkem-core
+```
+
+Responsibilities:
+
+- choose an AI capability/provider;
+- invoke models;
+- construct model context;
+- apply policies;
+- route requests;
+- support fallback;
+- expose higher-level application operations.
+
+Example future API:
+
+```text
+AIEngine.generate(...)
+AIEngine.stream(...)
+AIEngine.embed(...)
+```
+
+The application should usually interact with `AIEngine`, not directly with vendor adapters.
+
+Provider Gateway remains available independently for lower-level usage.
+
+---
+
+# 7. Model Registry
+
+Introduce only after Provider Gateway is stable.
+
+Purpose:
+
+Describe models independently from adapter implementation.
+
+Possible metadata:
+
+```text
+model id
+provider
+capabilities
+context window
+local/remote
+cost metadata
+availability
+tags
+```
+
+Potential future selection:
+
+```text
+"fast"
+"cheap"
+"local"
+"coding"
+"large-context"
+```
+
+Avoid automatic intelligent routing in the first implementation.
+
+Start with explicit configuration.
+
+---
+
+# 8. Context & Prompt Assembly
+
+This component builds the input sent to a model.
+
+Responsibilities may eventually include:
+
+- system instructions;
+- conversation history;
+- retrieved knowledge;
+- selected source files;
+- tool results;
+- token/context budgeting.
+
+Conceptually:
+
+```text
+ContextBuilder
+       │
+       ├── instructions
+       ├── conversation
+       ├── memories
+       ├── retrieved documents
+       └── tool outputs
+       │
+       ▼
+CompletionRequest
+```
+
+Provider Gateway must not know where context originated.
+
+---
+
+# 9. Knowledge / RAG
+
+Separate from provider access.
+
+Pipeline:
+
+```text
+Document
+    ↓
+Loader
+    ↓
+Chunker
+    ↓
+EmbeddingProvider
+    ↓
+Vector Store
+    ↓
+Retriever
+    ↓
+Relevant Context
+    ↓
+Context Builder
+```
+
+Initial target use case:
+
+> Add a PDF/book/document collection and ask questions using that material as contextual knowledge.
+
+Initial implementation should favor simplicity over scalability.
+
+Potential first vector store:
+
+- in-memory or lightweight local persistence.
+
+Do not introduce distributed vector infrastructure for the prototype.
+
+---
+
+# 10. Memory
+
+Memory is distinct from raw chat history.
+
+Future levels:
+
+## Session memory
+
+Information required during one active conversation/session.
+
+## Persistent memory
+
+Information reusable across sessions.
+
+## Longitudinal memory
+
+Information whose value comes from observing changes or continuity over time.
+
+Examples:
+
+- evolving project decisions;
+- recurring user preferences;
+- historical states;
+- changes in goals;
+- previous architectural choices.
+
+Longitudinal memory is a later milestone and must not block the initial product.
+
+---
+
+# 11. Tools
+
+Future models may request execution of deterministic capabilities.
+
+Examples:
+
+```text
+read file
+search repository
+inspect symbol
+run tests
+retrieve documentation
+```
+
+Architecture:
+
+```text
+Model
+  ↓ tool request
+Tool Registry
+  ↓
+Tool Executor
+  ↓
+Tool Result
+  ↓
+Model
+```
+
+Security boundary is important.
+
+AI-generated requests must never imply unrestricted execution.
+
+---
+
+# 12. Developer / Code Intelligence layer
+
+This is the first domain-specific ALKEM product direction.
+
+Potential capabilities:
+
+- explain a class/file/module;
+- inspect repository architecture;
+- ask questions about code;
+- generate small code changes;
+- propose refactors;
+- create implementation plans;
+- retrieve relevant symbols/files;
+- eventually apply changes through controlled tools.
+
+This layer can combine:
+
+```text
+AI Engine
++ Repository context
++ Retrieval
++ Tools
++ Session memory
+```
+
+It must remain separate from the generic AI infrastructure.
+
+---
+
+# 13. Clients
+
+## Phase 1
+
+CLI / developer test harness.
+
+Purpose:
+
+Validate architecture with minimal UI work.
+
+## Phase 2
+
+Desktop or API client if required.
+
+## Phase 3
+
+VS Code extension.
+
+Potential VS Code features:
+
+- primary AI conversation;
+- contextual code questions;
+- repository-aware analysis;
+- side-chat for secondary questions without disrupting the main session;
+- generated change previews;
+- selected-context workflows.
+
+UI must consume ALKEM application APIs rather than contain AI-provider logic itself.
+
+---
+
+# 14. Side-chat concept
+
+A session may contain a primary reasoning thread and temporary branches.
+
+Example:
+
+```text
+Main Session
+    │
+    ├── message
+    ├── message
+    │
+    ├── Side Chat
+    │      ├── question
+    │      └── explanation
+    │
+    └── continue main context
+```
+
+A side-chat:
+
+- inherits selected context from its parent;
+- does not automatically contaminate the main conversation;
+- may optionally promote a result back into the parent session.
+
+This concept belongs to session/application architecture, not Provider Gateway.
+
+Further explanation:
+# Side Chat / Ephemeral Branches
+
+## Product concept: Side Chat
+
+Side Chat allows a user to temporarily branch from the current
+conversation to ask a secondary question without contaminating or
+redirecting the main conversation context.
+
+Example:
+
+Main conversation:
+A → B → C ─────────────→ D
+          │
+          └→ Side Chat
+              Q → A
+
+After closing the Side Chat, the main conversation continues from C.
+
+Typical use cases:
+
+- ask what a concept means;
+- clarify something the model just said;
+- explore an alternative without changing the main reasoning thread;
+- ask a temporary implementation/detail question.
+
+## Architecture concept: Ephemeral Branch
+
+A Side Chat is implemented as an Ephemeral Branch of a conversation/session.
+
+An Ephemeral Branch:
+
+- has a parent conversation/thread;
+- branches from a specific point in that thread;
+- inherits the relevant parent context up to that point;
+- maintains its own messages;
+- does not automatically add its messages to the parent context;
+- can be discarded without affecting the parent;
+- may eventually allow selected information to be promoted back to
+  the parent conversation.
+
+This distinction implies an important architectural principle:
+
+Conversation history != Model context.
+
+The session may know that branches existed, while the Context Builder
+determines which messages are included in each model invocation.
+
+---
+
+# 15. Cross-workspace context chains
+
+Future concept.
+
+Allow reusable logical collections of items coming from different projects/workspaces.
+
+Example:
+
+```text
+Context Chain: "Authentication Refactor"
+
+Project A / requirement
+Project B / implementation pattern
+Article / architecture note
+Task / migration concern
+```
+
+The chain becomes reusable AI context.
+
+Potential applications:
+
+- code work;
+- research;
+- project management;
+- knowledge management.
+
+Defer implementation until basic context and retrieval abstractions exist.
+
+---
+
+# 16. Roadmap
+
+## Milestone 0 — Repository baseline
+
+Goal: make the existing gateway trustworthy.
+
+Tasks:
+
+- run current tests;
+- confirm package layout;
+- clean project metadata;
+- establish formatting/linting/type-checking strategy;
+- establish CI;
+- document architecture decisions.
+
+Deliverable:
+
+```text
+ai-provider-gateway v0.1 baseline
+```
+
+---
+
+## Milestone 1 — Provider Gateway v0.2
+
+Goal: establish stable provider-independent contracts.
+
+Tasks:
+
+1. audit current interfaces;
+2. separate chat and embedding capabilities;
+3. normalize streaming output;
+4. make embedding model explicit;
+5. verify cost units/calculation;
+6. improve adapter tests;
+7. test request/response translation without real network;
+8. define minimal normalized provider errors;
+9. retain OpenAI, Anthropic and Ollama adapters.
+
+Acceptance criteria:
+
+- application code can use ChatProvider without knowing vendor;
+- embedding support is optional;
+- streaming consumers receive normalized output;
+- adapter behavior is unit-testable without network access;
+- swapping providers requires no business-logic changes.
+
+---
+
+## Milestone 2 — ALKEM Core
+
+Goal: create the first orchestration layer.
+
+Implement:
+
+```text
+AIEngine
+ProviderRegistry
+Model configuration
+Basic explicit provider selection
+```
+
+Acceptance example:
+
+```text
+engine.generate(
+    model="...",
+    messages=[...]
+)
+```
+
+without client code constructing vendor adapters itself.
+
+No automatic routing yet.
+
+---
+
+## Milestone 3 — Developer CLI
+
+Goal: create a usable vertical slice.
+
+Example:
+
+```bash
+alkem ask "Explain dependency inversion"
+
+alkem ask --provider ollama --model qwen... "Explain this code"
+```
+
+Then:
+
+```bash
+alkem explain ./src/foo.py
+```
+
+This validates:
+
+```text
+Client → Core → Gateway → Provider
+```
+
+before introducing more infrastructure.
+
+---
+
+## Milestone 4 — Repository intelligence
+
+Goal: make ALKEM aware of a codebase.
+
+Capabilities:
+
+- repository scanning;
+- file/symbol selection;
+- contextual questions;
+- code explanation;
+- small generated modifications.
+
+Avoid embeddings initially if deterministic file selection is sufficient.
+
+---
+
+## Milestone 5 — Retrieval / Knowledge
+
+Goal: augment models with external material.
+
+First vertical slice:
+
+```text
+PDF/document
+→ extraction
+→ chunks
+→ embeddings
+→ retrieval
+→ model answer with context
+```
+
+Validate locally where practical.
+
+---
+
+## Milestone 6 — Sessions & Memory
+
+Implement:
+
+- conversation sessions;
+- persisted history;
+- context selection;
+- side-chat branches.
+
+Only after real usage exists, introduce richer memory concepts.
+
+---
+
+## Milestone 7 — Tool execution
+
+Implement controlled tools such as:
+
+- repository read;
+- symbol lookup;
+- test execution;
+- potentially controlled patch generation/application.
+
+Introduce explicit permissions and safety boundaries.
+
+---
+
+## Milestone 8 — VS Code extension
+
+Build the first rich client around already validated ALKEM capabilities.
+
+Initial scope:
+
+- chat panel;
+- selected-code context;
+- explain;
+- propose change;
+- side-chat.
+
+Do not put orchestration logic in the extension.
+
+---
+
+# 17. Explicit non-goals for the first milestones
+
+Do NOT initially build:
+
+- autonomous multi-agent systems;
+- generic agent framework;
+- complex workflow DSL;
+- distributed vector database;
+- Kubernetes infrastructure;
+- fine-tuning pipeline;
+- automatic model benchmarking system;
+- intelligent cost optimization;
+- dozens of provider integrations;
+- full IDE replacement;
+- generic memory framework.
+
+These may be revisited when concrete product requirements justify them.
+
+---
+
+# 18. Architectural decision records
+
+Important design choices should be recorded as lightweight ADRs.
+
+Initial ADR candidates:
+
+```text
+ADR-001 — Ports & Adapters for provider integration
+ADR-002 — Capability-specific provider protocols
+ADR-003 — Provider-neutral domain entities
+ADR-004 — RAG outside Provider Gateway
+ADR-005 — Local inference as a first-class capability
+```
+
+Each ADR should contain:
+
+```text
+Context
+Decision
+Alternatives considered
+Consequences
+```
+
+Keep ADRs short.
+
+---
+
+# 19. Codex working agreement
+
+Codex should treat this document as architecture guidance.
+
+For each implementation task:
+
+1. Read this spec and relevant ADRs.
+2. Inspect existing code before proposing changes.
+3. Prefer modifying existing abstractions over creating parallel ones.
+4. Present a short implementation plan.
+5. Identify architectural consequences.
+6. Implement only the requested scope.
+7. Add/update tests.
+8. Run relevant tests and static checks.
+9. Update this spec only when architecture/product behavior genuinely changes.
+10. Never introduce a major dependency or architectural pattern silently.
+
+Generated code must optimize for:
+
+```text
+correctness
+clarity
+testability
+small scope
+explicit boundaries
+```
+
+not line count.
+
+---
+
+# 20. Definition of Done for a Codex task
+
+A task is complete when:
+
+- requested behavior exists;
+- public contracts remain coherent;
+- tests cover meaningful behavior;
+- existing tests still pass;
+- no vendor concern leaked into domain/application code;
+- unnecessary abstraction was not introduced;
+- documentation changed if the public behavior changed.
+
+---
+
+# 21. Current next action
+
+**Next implementation milestone: Provider Gateway v0.2.**
+
+Before adding new ALKEM features, refactor the current provider gateway around capability-specific contracts and normalized provider behavior.
+
+The first Codex task should be deliberately small:
+
+> Audit the current `ai-provider-gateway` implementation against Milestone 1. Produce a proposed refactor plan only. Do not modify code yet. Identify contract issues, compatibility implications, test gaps and the smallest sequence of commits that can move the library from v0.1 to v0.2.
+
+After reviewing that plan, implementation proceeds one bounded task at a time.
