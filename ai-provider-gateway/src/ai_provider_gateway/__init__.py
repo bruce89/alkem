@@ -11,6 +11,8 @@
 from ai_provider_gateway.entities import (
     CompletionRequest,
     CompletionResult,
+    EmbeddingRequest,
+    EmbeddingResult,
     Message,
     Money,
     ProviderName,
@@ -23,6 +25,8 @@ __all__ = [
     "EmbeddingProvider",
     "CompletionRequest",
     "CompletionResult",
+    "EmbeddingRequest",
+    "EmbeddingResult",
     "Message",
     "Money",
     "ProviderName",

@@ -5,6 +5,8 @@ import httpx
 from ai_provider_gateway.entities import (
     CompletionRequest,
     CompletionResult,
+    EmbeddingRequest,
+    EmbeddingResult,
     Money,
     ProviderName,
 )
@@ -62,13 +64,17 @@ class OpenAIAdapter:
                     if line.startswith("data: ") and line != "data: [DONE]":
                         yield line[len("data: "):]
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        payload = {"model": "text-embedding-3-small", "input": texts}
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+        payload = {"model": request.model, "input": request.inputs}
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(f"{self._base_url}/embeddings", json=payload, headers=self._headers())
             resp.raise_for_status()
             data = resp.json()
-        return [item["embedding"] for item in data["data"]]
+        return EmbeddingResult(
+            embeddings=[item["embedding"] for item in sorted(data["data"], key=lambda item: item["index"])],
+            model=request.model,
+            provider=ProviderName.OPENAI,
+        )
 
     def estimate_cost(self, request: CompletionRequest) -> Money:
         approx_input_tokens = sum(len(m.content) for m in request.messages) // 4

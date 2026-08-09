@@ -1,6 +1,12 @@
 from typing import AsyncIterator, Protocol, runtime_checkable
 
-from ai_provider_gateway.entities import CompletionRequest, CompletionResult, Money
+from ai_provider_gateway.entities import (
+    CompletionRequest,
+    CompletionResult,
+    EmbeddingRequest,
+    EmbeddingResult,
+    Money,
+)
 
 
 @runtime_checkable
@@ -16,7 +22,7 @@ class ChatProvider(Protocol):
 class EmbeddingProvider(Protocol):
     """A provider capable of generating embeddings."""
 
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResult: ...
 
 
 @runtime_checkable

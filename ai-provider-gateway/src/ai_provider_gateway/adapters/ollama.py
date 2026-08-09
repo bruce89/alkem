@@ -5,6 +5,8 @@ import httpx
 from ai_provider_gateway.entities import (
     CompletionRequest,
     CompletionResult,
+    EmbeddingRequest,
+    EmbeddingResult,
     Money,
     ProviderName,
 )
@@ -53,17 +55,21 @@ class OllamaAdapter:
                     if line:
                         yield line
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         embeddings = []
         async with httpx.AsyncClient(timeout=60) as client:
-            for text in texts:
+            for text in request.inputs:
                 resp = await client.post(
                     f"{self._base_url}/api/embeddings",
-                    json={"model": "nomic-embed-text", "prompt": text},
+                    json={"model": request.model, "prompt": text},
                 )
                 resp.raise_for_status()
                 embeddings.append(resp.json()["embedding"])
-        return embeddings
+        return EmbeddingResult(
+            embeddings=embeddings,
+            model=request.model,
+            provider=ProviderName.OLLAMA,
+        )
 
     def estimate_cost(self, request: CompletionRequest) -> Money:
         # Self-hosted: no per-call marginal API cost. Compute cost still

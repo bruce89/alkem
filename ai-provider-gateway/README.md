@@ -32,7 +32,7 @@ provider = OllamaAdapter(base_url="http://localhost:11434")
 Providers implement only the capabilities they support:
 
 - `ChatProvider`: `complete()` and `stream()`
-- `EmbeddingProvider`: `embed()`
+- `EmbeddingProvider`: `embed(EmbeddingRequest)`
 - `CostEstimator`: `estimate_cost()`
 
 `OpenAIAdapter` and `OllamaAdapter` currently provide chat, embeddings, and
@@ -73,7 +73,7 @@ class MyChatProvider:
     async def stream(self, request: CompletionRequest): ...
 
 class MyEmbeddingProvider:
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResult: ...
 
 class MyCostEstimator:
     def estimate_cost(self, request: CompletionRequest) -> Money: ...

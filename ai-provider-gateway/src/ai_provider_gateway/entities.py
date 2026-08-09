@@ -33,6 +33,19 @@ class CompletionResult:
 
 
 @dataclass(frozen=True)
+class EmbeddingRequest:
+    model: str
+    inputs: list[str]
+
+
+@dataclass(frozen=True)
+class EmbeddingResult:
+    embeddings: list[list[float]]
+    model: str
+    provider: ProviderName
+
+
+@dataclass(frozen=True)
 class Money:
     cents: int
     currency: str = "USD"

@@ -1,6 +1,10 @@
 """Tests for provider capability contracts and adapter-specific behavior."""
 
+from pathlib import Path
+
 import pytest
+import ai_provider_gateway.adapters.ollama as ollama_module
+import ai_provider_gateway.adapters.openai as openai_module
 
 from ai_provider_gateway import (
     ChatProvider,
@@ -8,6 +12,8 @@ from ai_provider_gateway import (
     CompletionResult,
     CostEstimator,
     EmbeddingProvider,
+    EmbeddingRequest,
+    EmbeddingResult,
     Message,
     ProviderName,
 )
@@ -58,8 +64,12 @@ class FakeChatProvider:
 class FakeEmbeddingProvider:
     """A minimal embedding-only provider with no network or SDK."""
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [[0.0] for _ in texts]
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+        return EmbeddingResult(
+            embeddings=[[0.0] for _ in request.inputs],
+            model=request.model,
+            provider=ProviderName.OLLAMA,
+        )
 
 
 @pytest.mark.asyncio
@@ -77,7 +87,9 @@ async def test_chat_only_provider_is_valid_without_embeddings():
 async def test_embedding_only_provider_is_valid_without_chat():
     adapter: EmbeddingProvider = FakeEmbeddingProvider()
 
-    assert await adapter.embed(["text"]) == [[0.0]]
+    result = await adapter.embed(EmbeddingRequest(model="fake-model", inputs=["text"]))
+
+    assert result.embeddings == [[0.0]]
     assert isinstance(adapter, EmbeddingProvider)
     assert not isinstance(adapter, ChatProvider)
 
@@ -95,3 +107,87 @@ def test_concrete_adapters_expose_only_supported_capabilities():
         assert isinstance(adapter, EmbeddingProvider)
 
     assert not isinstance(anthropic, EmbeddingProvider)
+
+
+class FakeResponse:
+    def __init__(self, data: dict):
+        self._data = data
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return self._data
+
+
+class RecordingAsyncClient:
+    def __init__(self, responses: list[FakeResponse], calls: list[dict]):
+        self._responses = responses
+        self._calls = calls
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        return None
+
+    async def post(self, url: str, json: dict, headers: dict | None = None) -> FakeResponse:
+        self._calls.append({"url": url, "json": json, "headers": headers})
+        return self._responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_openai_embed_forwards_model_preserves_order_and_returns_metadata(monkeypatch):
+    calls: list[dict] = []
+    responses = [
+        FakeResponse(
+            {
+                "data": [
+                    {"index": 1, "embedding": [2.0]},
+                    {"index": 0, "embedding": [1.0]},
+                ]
+            }
+        )
+    ]
+    monkeypatch.setattr(
+        openai_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: RecordingAsyncClient(responses, calls),
+    )
+
+    result = await OpenAIAdapter(api_key="test-key").embed(
+        EmbeddingRequest(model="requested-openai-model", inputs=["first", "second"])
+    )
+
+    assert calls[0]["json"] == {"model": "requested-openai-model", "input": ["first", "second"]}
+    assert result.embeddings == [[1.0], [2.0]]
+    assert result.model == "requested-openai-model"
+    assert result.provider == ProviderName.OPENAI
+
+
+@pytest.mark.asyncio
+async def test_ollama_embed_forwards_model_preserves_order_and_returns_metadata(monkeypatch):
+    calls: list[dict] = []
+    responses = [FakeResponse({"embedding": [1.0]}), FakeResponse({"embedding": [2.0]})]
+    monkeypatch.setattr(
+        ollama_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: RecordingAsyncClient(responses, calls),
+    )
+
+    result = await OllamaAdapter(base_url="http://localhost:11434").embed(
+        EmbeddingRequest(model="requested-ollama-model", inputs=["first", "second"])
+    )
+
+    assert [call["json"] for call in calls] == [
+        {"model": "requested-ollama-model", "prompt": "first"},
+        {"model": "requested-ollama-model", "prompt": "second"},
+    ]
+    assert result.embeddings == [[1.0], [2.0]]
+    assert result.model == "requested-ollama-model"
+    assert result.provider == ProviderName.OLLAMA
+
+
+def test_adapters_do_not_hardcode_embedding_models():
+    assert "text-embedding-3-small" not in Path(openai_module.__file__).read_text()
+    assert "nomic-embed-text" not in Path(ollama_module.__file__).read_text()
