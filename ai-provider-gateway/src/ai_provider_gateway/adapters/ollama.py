@@ -1,3 +1,4 @@
+import json
 from typing import AsyncIterator
 
 import httpx
@@ -9,6 +10,7 @@ from ai_provider_gateway.entities import (
     EmbeddingResult,
     Money,
     ProviderName,
+    TextDelta,
 )
 
 
@@ -42,18 +44,21 @@ class OllamaAdapter:
             model=request.model,
         )
 
-    async def stream(self, request: CompletionRequest) -> AsyncIterator[str]:
+    async def stream(self, request: CompletionRequest) -> AsyncIterator[TextDelta]:
         payload = {
             "model": request.model,
             "messages": [{"role": m.role, "content": m.content} for m in request.messages],
             "stream": True,
+            "options": {"temperature": request.temperature, "num_predict": request.max_tokens},
         }
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("POST", f"{self._base_url}/api/chat", json=payload) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if line:
-                        yield line
+                        text = json.loads(line).get("message", {}).get("content")
+                        if text:
+                            yield TextDelta(text=text)
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         embeddings = []

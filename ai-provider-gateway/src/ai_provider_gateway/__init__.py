@@ -16,6 +16,7 @@ from ai_provider_gateway.entities import (
     Message,
     Money,
     ProviderName,
+    TextDelta,
 )
 from ai_provider_gateway.ports import ChatProvider, CostEstimator, EmbeddingProvider
 
@@ -30,6 +31,7 @@ __all__ = [
     "Message",
     "Money",
     "ProviderName",
+    "TextDelta",
 ]
 
 __version__ = "0.1.0"

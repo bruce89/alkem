@@ -33,6 +33,11 @@ class CompletionResult:
 
 
 @dataclass(frozen=True)
+class TextDelta:
+    text: str
+
+
+@dataclass(frozen=True)
 class EmbeddingRequest:
     model: str
     inputs: list[str]

@@ -6,6 +6,7 @@ from ai_provider_gateway.entities import (
     EmbeddingRequest,
     EmbeddingResult,
     Money,
+    TextDelta,
 )
 
 
@@ -15,7 +16,7 @@ class ChatProvider(Protocol):
 
     async def complete(self, request: CompletionRequest) -> CompletionResult: ...
 
-    async def stream(self, request: CompletionRequest) -> AsyncIterator[str]: ...
+    async def stream(self, request: CompletionRequest) -> AsyncIterator[TextDelta]: ...
 
 
 @runtime_checkable

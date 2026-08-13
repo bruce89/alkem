@@ -1,3 +1,4 @@
+import json
 from typing import AsyncIterator
 
 import httpx
@@ -9,6 +10,7 @@ from ai_provider_gateway.entities import (
     EmbeddingResult,
     Money,
     ProviderName,
+    TextDelta,
 )
 
 # Rough per-1K-token pricing (cents), used only for pre-call budget estimation —
@@ -47,7 +49,7 @@ class OpenAIAdapter:
             model=request.model,
         )
 
-    async def stream(self, request: CompletionRequest) -> AsyncIterator[str]:
+    async def stream(self, request: CompletionRequest) -> AsyncIterator[TextDelta]:
         payload = {
             "model": request.model,
             "messages": [{"role": m.role, "content": m.content} for m in request.messages],
@@ -62,7 +64,10 @@ class OpenAIAdapter:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if line.startswith("data: ") and line != "data: [DONE]":
-                        yield line[len("data: "):]
+                        data = json.loads(line[len("data: "):])
+                        text = data["choices"][0].get("delta", {}).get("content")
+                        if text:
+                            yield TextDelta(text=text)
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         payload = {"model": request.model, "input": request.inputs}

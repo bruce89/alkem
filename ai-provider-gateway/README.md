@@ -43,11 +43,11 @@ estimation, but not embeddings.
 
 ```python
 async for chunk in provider.stream(request):
-    print(chunk, end="", flush=True)
+    print(chunk.text, end="", flush=True)
 ```
 
-Streaming output remains provider-specific in this release. Its normalization
-is a later milestone.
+Streaming yields provider-neutral `TextDelta` values. Provider-specific SSE
+and NDJSON payloads remain inside their adapters.
 
 ## Cost estimation
 

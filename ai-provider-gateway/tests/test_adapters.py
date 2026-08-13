@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import ai_provider_gateway.adapters.anthropic as anthropic_module
 import ai_provider_gateway.adapters.ollama as ollama_module
 import ai_provider_gateway.adapters.openai as openai_module
 
@@ -16,6 +17,7 @@ from ai_provider_gateway import (
     EmbeddingResult,
     Message,
     ProviderName,
+    TextDelta,
 )
 from ai_provider_gateway.adapters import AnthropicAdapter, OllamaAdapter, OpenAIAdapter
 
@@ -58,7 +60,7 @@ class FakeChatProvider:
         )
 
     async def stream(self, request: CompletionRequest):
-        yield self._canned_text
+        yield TextDelta(text=self._canned_text)
 
 
 class FakeEmbeddingProvider:
@@ -136,6 +138,40 @@ class RecordingAsyncClient:
         return self._responses.pop(0)
 
 
+class FakeStreamResponse:
+    def __init__(self, lines: list[str]):
+        self._lines = lines
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        return None
+
+    def raise_for_status(self) -> None:
+        pass
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class RecordingStreamingClient:
+    def __init__(self, response: FakeStreamResponse, calls: list[dict]):
+        self._response = response
+        self._calls = calls
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        return None
+
+    def stream(self, method: str, url: str, json: dict, headers: dict | None = None) -> FakeStreamResponse:
+        self._calls.append({"method": method, "url": url, "json": json, "headers": headers})
+        return self._response
+
+
 @pytest.mark.asyncio
 async def test_openai_embed_forwards_model_preserves_order_and_returns_metadata(monkeypatch):
     calls: list[dict] = []
@@ -191,3 +227,85 @@ async def test_ollama_embed_forwards_model_preserves_order_and_returns_metadata(
 def test_adapters_do_not_hardcode_embedding_models():
     assert "text-embedding-3-small" not in Path(openai_module.__file__).read_text()
     assert "nomic-embed-text" not in Path(ollama_module.__file__).read_text()
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_emits_normalized_ordered_text_deltas(monkeypatch):
+    calls: list[dict] = []
+    response = FakeStreamResponse(
+        [
+            'data: {"choices": [{"delta": {"role": "assistant"}}]}',
+            'data: {"choices": [{"delta": {"content": "Hello"}}]}',
+            'data: {"choices": [{"delta": {"content": ""}}]}',
+            'data: {"choices": [{"delta": {"content": " world"}}]}',
+            "data: [DONE]",
+        ]
+    )
+    monkeypatch.setattr(
+        openai_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: RecordingStreamingClient(response, calls),
+    )
+
+    deltas = [
+        delta
+        async for delta in OpenAIAdapter(api_key="test-key").stream(
+            CompletionRequest(model="model", messages=[])
+        )
+    ]
+
+    assert deltas == [TextDelta("Hello"), TextDelta(" world")]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_emits_normalized_ordered_text_deltas(monkeypatch):
+    calls: list[dict] = []
+    response = FakeStreamResponse(
+        [
+            "event: message_start",
+            'data: {"type": "message_start", "message": {}}',
+            "event: content_block_delta",
+            'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello"}}',
+            'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": ""}}',
+            'data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}',
+            'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": " world"}}',
+        ]
+    )
+    monkeypatch.setattr(
+        anthropic_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: RecordingStreamingClient(response, calls),
+    )
+
+    deltas = [
+        delta
+        async for delta in AnthropicAdapter(api_key="test-key").stream(
+            CompletionRequest(model="model", messages=[])
+        )
+    ]
+
+    assert deltas == [TextDelta("Hello"), TextDelta(" world")]
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_emits_normalized_ordered_text_deltas_and_completion_options(monkeypatch):
+    calls: list[dict] = []
+    response = FakeStreamResponse(
+        [
+            '{"message": {"role": "assistant", "content": "Hello"}, "done": false}',
+            '{"message": {"content": ""}, "done": false}',
+            '{"done": true, "prompt_eval_count": 1}',
+            '{"message": {"content": " world"}, "done": false}',
+        ]
+    )
+    monkeypatch.setattr(
+        ollama_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: RecordingStreamingClient(response, calls),
+    )
+    request = CompletionRequest(model="model", messages=[], temperature=0.25, max_tokens=64)
+
+    deltas = [delta async for delta in OllamaAdapter(base_url="http://localhost:11434").stream(request)]
+
+    assert deltas == [TextDelta("Hello"), TextDelta(" world")]
+    assert calls[0]["json"]["options"] == {"temperature": 0.25, "num_predict": 64}

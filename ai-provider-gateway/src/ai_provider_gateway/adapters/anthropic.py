@@ -1,3 +1,4 @@
+import json
 from typing import AsyncIterator
 
 import httpx
@@ -7,6 +8,7 @@ from ai_provider_gateway.entities import (
     CompletionResult,
     Money,
     ProviderName,
+    TextDelta,
 )
 
 _PRICE_PER_1K_INPUT_CENTS = 0.3
@@ -64,7 +66,7 @@ class AnthropicAdapter:
             model=request.model,
         )
 
-    async def stream(self, request: CompletionRequest) -> AsyncIterator[str]:
+    async def stream(self, request: CompletionRequest) -> AsyncIterator[TextDelta]:
         system, rest = self._split_system(request.messages)
         payload = {
             "model": request.model,
@@ -80,8 +82,11 @@ class AnthropicAdapter:
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
-                    if line.startswith("data: "):
-                        yield line[len("data: "):]
+                    if line.startswith("data: ") and line != "data: [DONE]":
+                        data = json.loads(line[len("data: "):])
+                        text = data.get("delta", {}).get("text") if data.get("type") == "content_block_delta" else None
+                        if text:
+                            yield TextDelta(text=text)
 
     def estimate_cost(self, request: CompletionRequest) -> Money:
         approx_input_tokens = sum(len(m.content) for m in request.messages) // 4
