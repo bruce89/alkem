@@ -49,6 +49,17 @@ async for chunk in provider.stream(request):
 Streaming yields provider-neutral `TextDelta` values. Provider-specific SSE
 and NDJSON payloads remain inside their adapters.
 
+## HTTP clients and errors
+
+Adapters accept an optional `httpx.AsyncClient` for connection reuse and tests.
+Callers retain ownership of an injected client. Without one, an adapter lazily
+creates a reusable client; close it with `await adapter.aclose()` or use the
+adapter as an async context manager.
+
+Provider calls raise provider-neutral errors instead of raw HTTP exceptions:
+`AuthenticationError`, `RateLimitError`, `ModelUnavailableError`,
+`InvalidRequestError`, `ProviderConnectionError`, and `ProviderResponseError`.
+
 ## Cost estimation
 
 ```python

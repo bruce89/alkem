@@ -1,8 +1,11 @@
 """Tests for provider capability contracts and adapter-specific behavior."""
 
+import json
 from pathlib import Path
 
+import httpx
 import pytest
+import ai_provider_gateway.adapters._http as http_helpers
 import ai_provider_gateway.adapters.anthropic as anthropic_module
 import ai_provider_gateway.adapters.ollama as ollama_module
 import ai_provider_gateway.adapters.openai as openai_module
@@ -17,6 +20,13 @@ from ai_provider_gateway import (
     EmbeddingResult,
     Message,
     ProviderName,
+    AuthenticationError,
+    InvalidRequestError,
+    ModelUnavailableError,
+    ProviderConnectionError,
+    ProviderError,
+    ProviderResponseError,
+    RateLimitError,
     TextDelta,
 )
 from ai_provider_gateway.adapters import AnthropicAdapter, OllamaAdapter, OpenAIAdapter
@@ -111,111 +121,37 @@ def test_concrete_adapters_expose_only_supported_capabilities():
     assert not isinstance(anthropic, EmbeddingProvider)
 
 
-class FakeResponse:
-    def __init__(self, data: dict):
-        self._data = data
-
-    def raise_for_status(self) -> None:
-        pass
-
-    def json(self) -> dict:
-        return self._data
-
-
-class RecordingAsyncClient:
-    def __init__(self, responses: list[FakeResponse], calls: list[dict]):
-        self._responses = responses
-        self._calls = calls
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        return None
-
-    async def post(self, url: str, json: dict, headers: dict | None = None) -> FakeResponse:
-        self._calls.append({"url": url, "json": json, "headers": headers})
-        return self._responses.pop(0)
-
-
-class FakeStreamResponse:
-    def __init__(self, lines: list[str]):
-        self._lines = lines
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        return None
-
-    def raise_for_status(self) -> None:
-        pass
-
-    async def aiter_lines(self):
-        for line in self._lines:
-            yield line
-
-
-class RecordingStreamingClient:
-    def __init__(self, response: FakeStreamResponse, calls: list[dict]):
-        self._response = response
-        self._calls = calls
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        return None
-
-    def stream(self, method: str, url: str, json: dict, headers: dict | None = None) -> FakeStreamResponse:
-        self._calls.append({"method": method, "url": url, "json": json, "headers": headers})
-        return self._response
-
-
 @pytest.mark.asyncio
-async def test_openai_embed_forwards_model_preserves_order_and_returns_metadata(monkeypatch):
+async def test_openai_embed_forwards_model_preserves_order_and_returns_metadata():
     calls: list[dict] = []
-    responses = [
-        FakeResponse(
-            {
-                "data": [
-                    {"index": 1, "embedding": [2.0]},
-                    {"index": 0, "embedding": [1.0]},
-                ]
-            }
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"index": 1, "embedding": [2.0]}, {"index": 0, "embedding": [1.0]}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OpenAIAdapter(api_key="test-key", client=client).embed(
+            EmbeddingRequest(model="requested-openai-model", inputs=["first", "second"])
         )
-    ]
-    monkeypatch.setattr(
-        openai_module.httpx,
-        "AsyncClient",
-        lambda **kwargs: RecordingAsyncClient(responses, calls),
-    )
 
-    result = await OpenAIAdapter(api_key="test-key").embed(
-        EmbeddingRequest(model="requested-openai-model", inputs=["first", "second"])
-    )
-
-    assert calls[0]["json"] == {"model": "requested-openai-model", "input": ["first", "second"]}
+    assert calls[0] == {"model": "requested-openai-model", "input": ["first", "second"]}
     assert result.embeddings == [[1.0], [2.0]]
     assert result.model == "requested-openai-model"
     assert result.provider == ProviderName.OPENAI
 
 
 @pytest.mark.asyncio
-async def test_ollama_embed_forwards_model_preserves_order_and_returns_metadata(monkeypatch):
+async def test_ollama_embed_forwards_model_preserves_order_and_returns_metadata():
     calls: list[dict] = []
-    responses = [FakeResponse({"embedding": [1.0]}), FakeResponse({"embedding": [2.0]})]
-    monkeypatch.setattr(
-        ollama_module.httpx,
-        "AsyncClient",
-        lambda **kwargs: RecordingAsyncClient(responses, calls),
-    )
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"embedding": [float(len(calls))]})
 
-    result = await OllamaAdapter(base_url="http://localhost:11434").embed(
-        EmbeddingRequest(model="requested-ollama-model", inputs=["first", "second"])
-    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OllamaAdapter(base_url="http://localhost:11434", client=client).embed(
+            EmbeddingRequest(model="requested-ollama-model", inputs=["first", "second"])
+        )
 
-    assert [call["json"] for call in calls] == [
+    assert calls == [
         {"model": "requested-ollama-model", "prompt": "first"},
         {"model": "requested-ollama-model", "prompt": "second"},
     ]
@@ -229,38 +165,146 @@ def test_adapters_do_not_hardcode_embedding_models():
     assert "nomic-embed-text" not in Path(ollama_module.__file__).read_text()
 
 
-@pytest.mark.asyncio
-async def test_openai_stream_emits_normalized_ordered_text_deltas(monkeypatch):
-    calls: list[dict] = []
-    response = FakeStreamResponse(
-        [
-            'data: {"choices": [{"delta": {"role": "assistant"}}]}',
-            'data: {"choices": [{"delta": {"content": "Hello"}}]}',
-            'data: {"choices": [{"delta": {"content": ""}}]}',
-            'data: {"choices": [{"delta": {"content": " world"}}]}',
-            "data: [DONE]",
-        ]
-    )
-    monkeypatch.setattr(
-        openai_module.httpx,
-        "AsyncClient",
-        lambda **kwargs: RecordingStreamingClient(response, calls),
-    )
+def test_normalized_errors_share_a_provider_error_base_class():
+    for error_type in (
+        AuthenticationError,
+        RateLimitError,
+        ModelUnavailableError,
+        InvalidRequestError,
+        ProviderConnectionError,
+        ProviderResponseError,
+    ):
+        assert issubclass(error_type, ProviderError)
 
-    deltas = [
-        delta
-        async for delta in OpenAIAdapter(api_key="test-key").stream(
-            CompletionRequest(model="model", messages=[])
-        )
-    ]
+
+def completion_response() -> dict:
+    return {
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_injected_client_is_reused_and_not_closed_by_adapter():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=completion_response())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = OpenAIAdapter(api_key="test-key", client=client)
+
+    await adapter.complete(CompletionRequest(model="model", messages=[]))
+    await adapter.complete(CompletionRequest(model="model", messages=[]))
+    await adapter.aclose()
+
+    assert len(requests) == 2
+    assert not client.is_closed
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_adapter_context_manager_does_not_close_an_injected_client():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=completion_response())))
+
+    async with OpenAIAdapter(api_key="test-key", client=client) as adapter:
+        await adapter.complete(CompletionRequest(model="model", messages=[]))
+
+    assert not client.is_closed
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_adapter_owned_client_can_be_explicitly_closed(monkeypatch):
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=completion_response())))
+    monkeypatch.setattr(http_helpers.httpx, "AsyncClient", lambda **kwargs: client)
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    await adapter.complete(CompletionRequest(model="model", messages=[]))
+    assert not client.is_closed
+
+    await adapter.aclose()
+    assert client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_adapter_context_manager_closes_an_owned_client(monkeypatch):
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=completion_response())))
+    monkeypatch.setattr(http_helpers.httpx, "AsyncClient", lambda **kwargs: client)
+
+    async with OpenAIAdapter(api_key="test-key") as adapter:
+        await adapter.complete(CompletionRequest(model="model", messages=[]))
+
+    assert client.is_closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_error"),
+    [
+        (401, AuthenticationError),
+        (429, RateLimitError),
+        (400, InvalidRequestError),
+        (404, ModelUnavailableError),
+    ],
+)
+async def test_http_status_failures_are_normalized(status_code, expected_error):
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(status_code)))
+    adapter = OpenAIAdapter(api_key="test-key", client=client)
+
+    with pytest.raises(expected_error) as error:
+        await adapter.complete(CompletionRequest(model="model", messages=[]))
+
+    assert not isinstance(error.value, httpx.HTTPError)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_is_normalized_to_provider_connection_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection failed", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = OllamaAdapter(base_url="http://localhost:11434", client=client)
+
+    with pytest.raises(ProviderConnectionError) as error:
+        await adapter.complete(CompletionRequest(model="model", messages=[]))
+
+    assert not isinstance(error.value, httpx.HTTPError)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_malformed_success_response_is_normalized_to_provider_response_error():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})))
+    adapter = AnthropicAdapter(api_key="test-key", client=client)
+
+    with pytest.raises(ProviderResponseError) as error:
+        await adapter.complete(CompletionRequest(model="model", messages=[]))
+
+    assert not isinstance(error.value, httpx.HTTPError)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_emits_normalized_ordered_text_deltas():
+    content = '\n'.join([
+        'data: {"choices": [{"delta": {"role": "assistant"}}]}',
+        'data: {"choices": [{"delta": {"content": "Hello"}}]}',
+        'data: {"choices": [{"delta": {"content": ""}}]}',
+        'data: {"choices": [{"delta": {"content": " world"}}]}',
+        "data: [DONE]",
+    ])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=content))) as client:
+        deltas = [delta async for delta in OpenAIAdapter(api_key="test-key", client=client).stream(CompletionRequest(model="model", messages=[]))]
 
     assert deltas == [TextDelta("Hello"), TextDelta(" world")]
 
 
 @pytest.mark.asyncio
-async def test_anthropic_stream_emits_normalized_ordered_text_deltas(monkeypatch):
-    calls: list[dict] = []
-    response = FakeStreamResponse(
+async def test_anthropic_stream_emits_normalized_ordered_text_deltas():
+    content = '\n'.join(
         [
             "event: message_start",
             'data: {"type": "message_start", "message": {}}',
@@ -271,26 +315,16 @@ async def test_anthropic_stream_emits_normalized_ordered_text_deltas(monkeypatch
             'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": " world"}}',
         ]
     )
-    monkeypatch.setattr(
-        anthropic_module.httpx,
-        "AsyncClient",
-        lambda **kwargs: RecordingStreamingClient(response, calls),
-    )
-
-    deltas = [
-        delta
-        async for delta in AnthropicAdapter(api_key="test-key").stream(
-            CompletionRequest(model="model", messages=[])
-        )
-    ]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=content))) as client:
+        deltas = [delta async for delta in AnthropicAdapter(api_key="test-key", client=client).stream(CompletionRequest(model="model", messages=[]))]
 
     assert deltas == [TextDelta("Hello"), TextDelta(" world")]
 
 
 @pytest.mark.asyncio
-async def test_ollama_stream_emits_normalized_ordered_text_deltas_and_completion_options(monkeypatch):
+async def test_ollama_stream_emits_normalized_ordered_text_deltas_and_completion_options():
     calls: list[dict] = []
-    response = FakeStreamResponse(
+    content = '\n'.join(
         [
             '{"message": {"role": "assistant", "content": "Hello"}, "done": false}',
             '{"message": {"content": ""}, "done": false}',
@@ -298,14 +332,13 @@ async def test_ollama_stream_emits_normalized_ordered_text_deltas_and_completion
             '{"message": {"content": " world"}, "done": false}',
         ]
     )
-    monkeypatch.setattr(
-        ollama_module.httpx,
-        "AsyncClient",
-        lambda **kwargs: RecordingStreamingClient(response, calls),
-    )
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, text=content)
     request = CompletionRequest(model="model", messages=[], temperature=0.25, max_tokens=64)
 
-    deltas = [delta async for delta in OllamaAdapter(base_url="http://localhost:11434").stream(request)]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        deltas = [delta async for delta in OllamaAdapter(base_url="http://localhost:11434", client=client).stream(request)]
 
     assert deltas == [TextDelta("Hello"), TextDelta(" world")]
-    assert calls[0]["json"]["options"] == {"temperature": 0.25, "num_predict": 64}
+    assert calls[0]["options"] == {"temperature": 0.25, "num_predict": 64}

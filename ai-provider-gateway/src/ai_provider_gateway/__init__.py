@@ -18,6 +18,15 @@ from ai_provider_gateway.entities import (
     ProviderName,
     TextDelta,
 )
+from ai_provider_gateway.errors import (
+    AuthenticationError,
+    InvalidRequestError,
+    ModelUnavailableError,
+    ProviderConnectionError,
+    ProviderError,
+    ProviderResponseError,
+    RateLimitError,
+)
 from ai_provider_gateway.ports import ChatProvider, CostEstimator, EmbeddingProvider
 
 __all__ = [
@@ -32,6 +41,13 @@ __all__ = [
     "Money",
     "ProviderName",
     "TextDelta",
+    "ProviderError",
+    "AuthenticationError",
+    "RateLimitError",
+    "ModelUnavailableError",
+    "InvalidRequestError",
+    "ProviderConnectionError",
+    "ProviderResponseError",
 ]
 
 __version__ = "0.1.0"
