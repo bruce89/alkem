@@ -4,6 +4,8 @@
 
 An embedding is a numeric vector that represents the semantic meaning of an input, such as a sentence, document chunk, or source-code fragment. Inputs with similar meaning should be located near one another in vector space.
 
+Embeddings are not generation. A chat model produces a response; an embedding model produces a vector that another system can compare, index, or retrieve.
+
 ## Why ALKEM may use them
 
 Embeddings are a building block for later retrieval workflows:
@@ -28,7 +30,7 @@ EmbeddingRequest(model, inputs)
 EmbeddingResult(embeddings, model, provider)
 ```
 
-The caller selects the model. An adapter translates that request to its provider protocol; it must not hardcode an embedding model. OpenAI and Ollama currently implement `EmbeddingProvider`; Anthropic does not.
+The caller selects the model through `EmbeddingRequest`. An adapter translates that request to its provider protocol; it executes that decision but must not appropriate it by hardcoding an embedding model. OpenAI and Ollama currently implement `EmbeddingProvider`; Anthropic does not.
 
 ## Questions to study
 

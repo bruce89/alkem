@@ -2,7 +2,7 @@
 
 ## What it is
 
-Streaming returns a model response incrementally instead of waiting for the complete response. This improves perceived responsiveness and makes long responses usable while generation is still in progress.
+A normal request/response call waits for the complete model response. Streaming returns that response incrementally instead. This improves perceived responsiveness and makes long responses usable while generation is still in progress.
 
 ## Why it matters for ALKEM
 
@@ -12,11 +12,11 @@ Streaming is primarily a user-experience concern at the boundary between the pro
 
 `ChatProvider` owns both `complete()` and `stream()` because they are two closely related ways to consume chat generation.
 
-The current adapters still expose provider-specific stream payloads. This is intentionally temporary: consumers should eventually receive a provider-neutral stream event, rather than parse OpenAI or Anthropic SSE data or Ollama JSON lines themselves.
+The gateway now exposes a minimal provider-neutral `TextDelta` contract. Consumers do not parse provider wire formats: OpenAI and Anthropic use Server-Sent Events (SSE), while Ollama uses newline-delimited JSON (NDJSON).
 
 ## Deferred design work
 
-A later milestone can introduce a normalized event contract, beginning with text deltas. Usage updates and completion events should only be added when a real consumer needs them.
+A later milestone can introduce richer normalized events when a real consumer needs them. Usage updates, completion events, tool deltas, reasoning events, and `StreamStarted` are deliberately not represented yet.
 
 Do not add routing, retries, HTTP lifecycle changes, or a complex event hierarchy merely as part of streaming normalization.
 
