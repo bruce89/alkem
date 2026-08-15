@@ -19,6 +19,8 @@ from ai_provider_gateway import (
     EmbeddingRequest,
     EmbeddingResult,
     Message,
+    ModelPricing,
+    Money,
     ProviderName,
     AuthenticationError,
     InvalidRequestError,
@@ -32,15 +34,65 @@ from ai_provider_gateway import (
 from ai_provider_gateway.adapters import AnthropicAdapter, OllamaAdapter, OpenAIAdapter
 
 
-def test_openai_estimate_cost_is_positive_and_deterministic():
-    adapter = OpenAIAdapter(api_key="unused-for-this-test")
-    request = CompletionRequest(model="gpt-4o-mini", messages=[Message(role="user", content="hello world")])
+def test_openai_estimate_cost_uses_integer_cents_per_million_tokens():
+    adapter = OpenAIAdapter(
+        api_key="unused-for-this-test",
+        pricing_by_model={
+            "known-model": ModelPricing(
+                input_cents_per_million_tokens=2_000_000,
+                output_cents_per_million_tokens=3_000_000,
+            )
+        },
+    )
+    request = CompletionRequest(
+        model="known-model",
+        messages=[Message(role="user", content="four")],
+        max_tokens=2,
+    )
 
     cost = adapter.estimate_cost(request)
 
-    assert cost.cents > 0
+    assert cost.cents == 8
     assert cost.currency == "USD"
     assert adapter.estimate_cost(request) == cost
+
+
+def test_cost_estimate_applies_input_and_output_rates_independently():
+    request = CompletionRequest(model="model", messages=[Message(role="user", content="four")], max_tokens=2)
+    input_only = OpenAIAdapter(
+        api_key="unused-for-this-test",
+        pricing_by_model={"model": ModelPricing(5_000_000, 0)},
+    )
+    output_only = OpenAIAdapter(
+        api_key="unused-for-this-test",
+        pricing_by_model={"model": ModelPricing(0, 7_000_000)},
+    )
+
+    assert input_only.estimate_cost(request).cents == 5
+    assert output_only.estimate_cost(request).cents == 14
+
+
+def test_cost_estimate_selects_pricing_by_model_and_rejects_unknown_models():
+    adapter = AnthropicAdapter(
+        api_key="unused-for-this-test",
+        pricing_by_model={
+            "input-model": ModelPricing(1_000_000, 0),
+            "output-model": ModelPricing(0, 2_000_000),
+        },
+    )
+
+    assert adapter.estimate_cost(CompletionRequest(model="input-model", messages=[Message("user", "four")], max_tokens=1)).cents == 1
+    assert adapter.estimate_cost(CompletionRequest(model="output-model", messages=[Message("user", "four")], max_tokens=1)).cents == 2
+    with pytest.raises(ValueError, match="No pricing configured for model: unknown-model"):
+        adapter.estimate_cost(CompletionRequest(model="unknown-model", messages=[]))
+
+
+def test_ollama_estimate_is_zero_marginal_external_api_cost():
+    cost = OllamaAdapter(base_url="http://localhost:11434").estimate_cost(
+        CompletionRequest(model="local-model", messages=[Message("user", "four")])
+    )
+
+    assert cost == Money(cents=0)
 
 
 def test_anthropic_splits_system_message_from_the_rest():

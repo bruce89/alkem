@@ -1,5 +1,5 @@
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, Mapping
 
 import httpx
 
@@ -13,9 +13,7 @@ from ai_provider_gateway.entities import (
     ProviderName,
     TextDelta,
 )
-
-_PRICE_PER_1K_INPUT_CENTS = 0.5
-_PRICE_PER_1K_OUTPUT_CENTS = 1.5
+from ai_provider_gateway.pricing import ModelPricing, estimate_completion_cost
 
 
 class OpenAIAdapter(HttpClientOwner):
@@ -24,10 +22,12 @@ class OpenAIAdapter(HttpClientOwner):
         api_key: str | None,
         base_url: str = "https://api.openai.com/v1",
         client: httpx.AsyncClient | None = None,
+        pricing_by_model: Mapping[str, ModelPricing] | None = None,
     ):
         super().__init__(client)
         self._api_key = api_key
         self._base_url = base_url
+        self._pricing_by_model = dict(pricing_by_model or {})
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
@@ -94,7 +94,7 @@ class OpenAIAdapter(HttpClientOwner):
             raise provider_error(error) from error
 
     def estimate_cost(self, request: CompletionRequest) -> Money:
-        approx_input_tokens = sum(len(m.content) for m in request.messages) // 4
-        cents = (approx_input_tokens / 1000) * _PRICE_PER_1K_INPUT_CENTS
-        cents += (request.max_tokens / 1000) * _PRICE_PER_1K_OUTPUT_CENTS
-        return Money(cents=round(cents * 100))
+        pricing = self._pricing_by_model.get(request.model)
+        if pricing is None:
+            raise ValueError(f"No pricing configured for model: {request.model}")
+        return estimate_completion_cost(request, pricing)

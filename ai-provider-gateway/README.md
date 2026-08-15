@@ -71,8 +71,30 @@ if estimated.cents > budget_remaining_cents:
     raise BudgetExceeded()
 ```
 
-`estimate_cost()` is a rough pre-call estimate. Use the token counts returned
-on `CompletionResult` for post-call accounting.
+`estimate_cost()` is a rough pre-call estimate. OpenAI and Anthropic require
+explicit model pricing supplied by the caller:
+
+```python
+from ai_provider_gateway import ModelPricing
+
+provider = OpenAIAdapter(
+    api_key="sk-...",
+    pricing_by_model={
+        "your-model": ModelPricing(
+            input_cents_per_million_tokens=150,
+            output_cents_per_million_tokens=600,
+        )
+    },
+)
+```
+
+Rates are integer cents per one million tokens. The gateway estimates input
+tokens using its existing character-based approximation and uses
+`CompletionRequest.max_tokens` for output; it rounds the total up once to a
+whole cent. An unknown model has no estimate and raises `ValueError`.
+
+Ollama returns zero only for the estimated marginal external API charge. Local
+inference still consumes compute, electricity, and hardware resources.
 
 ## Adding a provider
 

@@ -28,6 +28,7 @@ from ai_provider_gateway.errors import (
     RateLimitError,
 )
 from ai_provider_gateway.ports import ChatProvider, CostEstimator, EmbeddingProvider
+from ai_provider_gateway.pricing import ModelPricing
 
 __all__ = [
     "ChatProvider",
@@ -48,6 +49,7 @@ __all__ = [
     "InvalidRequestError",
     "ProviderConnectionError",
     "ProviderResponseError",
+    "ModelPricing",
 ]
 
 __version__ = "0.1.0"

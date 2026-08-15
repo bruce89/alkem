@@ -78,4 +78,5 @@ class OllamaAdapter(HttpClientOwner):
             raise provider_error(error) from error
 
     def estimate_cost(self, request: CompletionRequest) -> Money:
+        """Estimate marginal external API charge, not local compute cost."""
         return Money(cents=0)
