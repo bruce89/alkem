@@ -33,10 +33,7 @@ python -m venv .venv
 ## Current milestone
 
 The first HTTP inference boundary is scaffolded and tested through an injected
-generation service. The next implementation exercise is the production
-composition root: validated environment settings, engine construction, and
-FastAPI lifespan ownership. See `alkem-api/README.md` for the intentionally
-bounded backlog.
+generation service.
 
 Not yet included: authentication, streaming over HTTP, retry policy,
 observability, Docker, persistence, RAG, tool execution, or agents.

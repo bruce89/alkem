@@ -47,9 +47,7 @@ def create_app(engine: GenerationService) -> FastAPI:
                 detail=f"Model is not configured: {error.model}",
             ) from error
         except ProviderError as error:
-            # TODO(applied-ai-exercise): This intentionally coarse policy hides
-            # useful retryability distinctions such as rate limiting versus a
-            # malformed upstream response. Design the policy before refining it.
+            # Do not expose upstream infrastructure details to API clients.
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="The configured AI provider failed.",
